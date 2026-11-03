@@ -42,7 +42,10 @@ def new_features(features):
         features['OpenPorchSF'] + features['3SsnPorch'] +
         features['EnclosedPorch'] + features['ScreenPorch']
     )
-    features['YearsSinceRemodel'] = features['YrSold'].astype(int) - features['YearRemodAdd'].astype(int)
+    features['YearsSinceRemodel'] = (
+        pd.to_numeric(features['YrSold'], errors='coerce').fillna(2008).astype(int) -
+        pd.to_numeric(features['YearRemodAdd'], errors='coerce').fillna(2000).astype(int)
+    )
     return features
 
 @st.cache_resource
@@ -62,7 +65,11 @@ def run_pdf_pipeline():
     default_row = {}
     for c in raw_train_reference.columns:
         if pd.api.types.is_numeric_dtype(raw_train_reference[c]):
-            default_row[c] = float(raw_train_reference[c].median())
+            val = float(raw_train_reference[c].median())
+            if c in ['MSSubClass', 'MoSold', 'YrSold', 'YearRemodAdd', 'YearBuilt']:
+                default_row[c] = int(round(val))
+            else:
+                default_row[c] = val
         else:
             mode_vals = raw_train_reference[c].dropna().mode()
             default_row[c] = str(mode_vals.iloc[0]) if not mode_vals.empty else 'None'
@@ -77,9 +84,9 @@ def run_pdf_pipeline():
     
     features = pd.concat((train_features, test_features)).reset_index(drop=True)
     
-    features['MSSubClass'] = features['MSSubClass'].apply(str)
-    features['MoSold'] = features['MoSold'].astype(str)
-    features['YrSold'] = features['YrSold'].astype(str)
+    features['MSSubClass'] = features['MSSubClass'].astype(int).astype(str)
+    features['MoSold'] = features['MoSold'].astype(int).astype(str)
+    features['YrSold'] = features['YrSold'].astype(int).astype(str)
     
     features = features.drop(['PoolQC', 'MiscFeature', 'Alley', 'Fence'], axis=1)
     features = filling_null(features)
@@ -190,12 +197,12 @@ with tab1:
         base_row['FullBath'] = full_bath
         base_row['GarageCars'] = garage_cars
         base_row['GarageArea'] = garage_area
-        base_row['YearRemodAdd'] = year_remod
+        base_row['YearRemodAdd'] = int(year_remod)
         base_row['Neighborhood'] = neighborhood
         
-        base_row['MSSubClass'] = base_row['MSSubClass'].apply(str)
-        base_row['MoSold'] = base_row['MoSold'].astype(str)
-        base_row['YrSold'] = base_row['YrSold'].astype(str)
+        base_row['MSSubClass'] = pd.to_numeric(base_row['MSSubClass'], errors='coerce').fillna(60).astype(int).astype(str)
+        base_row['MoSold'] = pd.to_numeric(base_row['MoSold'], errors='coerce').fillna(6).astype(int).astype(str)
+        base_row['YrSold'] = pd.to_numeric(base_row['YrSold'], errors='coerce').fillna(2008).astype(int).astype(str)
         base_row = base_row.drop(['PoolQC', 'MiscFeature', 'Alley', 'Fence'], axis=1, errors='ignore')
         base_row = new_features(base_row)
         
