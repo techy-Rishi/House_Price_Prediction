@@ -73,15 +73,20 @@ def run_pdf_pipeline():
     features = filling_null(features)
     features = new_features(features)
     
-    # Compute Box-Cox lambdas so single user inputs can be transformed identically
+    # Compute Box-Cox lambdas safely with fallback to log1p (lambda=0) if BracketError occurs
     numerical_columns = features.select_dtypes(exclude='object').columns
     skewed = features[numerical_columns].apply(lambda x: x.skew()).sort_values(ascending=False)
     high_skew = skewed[abs(skewed) > 0.5].index
     
     lambdas = {}
     for col in high_skew:
-        lambdas[col] = boxcox_normmax(features[col] + 1)
-        features[col] = boxcox1p(features[col], lambdas[col])
+        col_data = features[col].clip(lower=0)
+        try:
+            lmbda = boxcox_normmax(col_data + 1)
+        except Exception:
+            lmbda = 0.0
+        lambdas[col] = lmbda
+        features[col] = boxcox1p(col_data, lmbda)
         
     features_encoded = pd.get_dummies(features).reset_index(drop=True)
     
@@ -156,7 +161,6 @@ with tab1:
         neighborhood = st.selectbox("Neighborhood", sorted(ref_df['Neighborhood'].dropna().unique()))
 
     if st.button("Predict SalePrice", type="primary"):
-        # Start with median/mode baseline row for the remaining 68 background features
         base_row = ref_df.iloc[[0]].copy()
         for c in ref_df.columns:
             if ref_df[c].dtype == 'object':
@@ -164,7 +168,6 @@ with tab1:
             else:
                 base_row[c] = ref_df[c].median()
                 
-        # Override with user inputs
         base_row['OverallQual'] = overall_qual
         base_row['OverallCond'] = overall_cond
         base_row['GrLivArea'] = gr_liv_area
@@ -186,7 +189,7 @@ with tab1:
         
         for col, lmbda in lambdas.items():
             if col in base_row.columns:
-                base_row[col] = boxcox1p(base_row[col], lmbda)
+                base_row[col] = boxcox1p(base_row[col].clip(lower=0), lmbda)
                 
         base_encoded = pd.get_dummies(base_row).reindex(columns=encoded_cols, fill_value=0)
         pred_log = models[selected_model].predict(base_encoded)[0]
