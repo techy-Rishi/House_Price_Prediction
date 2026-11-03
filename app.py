@@ -59,7 +59,7 @@ def run_pdf_pipeline():
     raw_train_reference = train.drop('SalePrice', axis=1).copy()
     train['SalePrice'] = np.log1p(train['SalePrice'])
     
-    y = train['SalePrice'].reset_index(drop=True)
+    y = train['SalePrice'].reset_index(drop=True).to_numpy(dtype=np.float64)
     train_features = train.drop('SalePrice', axis=1)
     test_features = test.copy()
     
@@ -73,7 +73,7 @@ def run_pdf_pipeline():
     features = filling_null(features)
     features = new_features(features)
     
-    # Compute Box-Cox lambdas safely with fallback to log1p (lambda=0) if BracketError occurs
+    # Compute Box-Cox lambdas safely and prevent inf/NaN values
     numerical_columns = features.select_dtypes(exclude='object').columns
     skewed = features[numerical_columns].apply(lambda x: x.skew()).sort_values(ascending=False)
     high_skew = skewed[abs(skewed) > 0.5].index
@@ -82,16 +82,21 @@ def run_pdf_pipeline():
     for col in high_skew:
         col_data = features[col].clip(lower=0)
         try:
-            lmbda = boxcox_normmax(col_data + 1)
+            lmbda = float(boxcox_normmax(col_data + 1))
+            if not np.isfinite(lmbda) or abs(lmbda) > 5:
+                lmbda = 0.0
         except Exception:
             lmbda = 0.0
         lambdas[col] = lmbda
-        features[col] = boxcox1p(col_data, lmbda)
+        transformed = boxcox1p(col_data, lmbda)
+        features[col] = np.nan_to_num(transformed, nan=0.0, posinf=0.0, neginf=0.0)
         
-    features_encoded = pd.get_dummies(features).reset_index(drop=True)
+    features_encoded = pd.get_dummies(features, dtype=float).reset_index(drop=True)
+    features_encoded = features_encoded.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    encoded_cols = features_encoded.columns
     
-    X = features_encoded.iloc[:len(y), :]
-    X_submission = features_encoded.iloc[len(y):, :]
+    X = features_encoded.iloc[:len(y), :].to_numpy(dtype=np.float64)
+    X_submission = features_encoded.iloc[len(y):, :].to_numpy(dtype=np.float64)
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=0)
     
@@ -127,7 +132,7 @@ def run_pdf_pipeline():
     test_pred = np.expm1(ridge.predict(X_submission))
     submission = pd.DataFrame({'Id': test_id, 'SalePrice': test_pred})
     
-    return models, pd.DataFrame(metrics), submission, raw_train_reference, lambdas, X.columns
+    return models, pd.DataFrame(metrics), submission, raw_train_reference, lambdas, encoded_cols
 
 st.title("🏠 House Price EDA and Prediction (Ames Housing Dataset)")
 
@@ -189,10 +194,12 @@ with tab1:
         
         for col, lmbda in lambdas.items():
             if col in base_row.columns:
-                base_row[col] = boxcox1p(base_row[col].clip(lower=0), lmbda)
+                transformed = boxcox1p(base_row[col].clip(lower=0), lmbda)
+                base_row[col] = np.nan_to_num(transformed, nan=0.0, posinf=0.0, neginf=0.0)
                 
-        base_encoded = pd.get_dummies(base_row).reindex(columns=encoded_cols, fill_value=0)
-        pred_log = models[selected_model].predict(base_encoded)[0]
+        base_encoded = pd.get_dummies(base_row, dtype=float).reindex(columns=encoded_cols, fill_value=0.0)
+        base_array = base_encoded.to_numpy(dtype=np.float64)
+        pred_log = models[selected_model].predict(base_array)[0]
         pred_price = np.expm1(pred_log)
         st.success(f"### Estimated Sale Price: ${pred_price:,.2f}")
 
