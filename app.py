@@ -20,8 +20,8 @@ def filling_null(features):
     features['MSZoning'] = features.groupby('MSSubClass')['MSZoning'].transform(lambda x: x.fillna(x.mode()[0]))
     features['LotFrontage'] = features.groupby('Neighborhood')['LotFrontage'].transform(lambda x: x.fillna(x.median()))
     
-    cat_features = features.select_dtypes(include='object').columns
-    num_features = features.select_dtypes(exclude='object').columns
+    cat_features = features.select_dtypes(exclude=[np.number]).columns
+    num_features = features.select_dtypes(include=[np.number]).columns
     features[cat_features] = features[cat_features].fillna('None')
     features[num_features] = features[num_features].fillna(0)
     return features
@@ -57,6 +57,18 @@ def run_pdf_pipeline():
     # Outlier removal and log transformation from PDF
     train = train[train['GrLivArea'] < 4500].copy()
     raw_train_reference = train.drop('SalePrice', axis=1).copy()
+    
+    # Pre-build a clean default row (median for numbers, mode for text)
+    default_row = {}
+    for c in raw_train_reference.columns:
+        if pd.api.types.is_numeric_dtype(raw_train_reference[c]):
+            default_row[c] = float(raw_train_reference[c].median())
+        else:
+            mode_vals = raw_train_reference[c].dropna().mode()
+            default_row[c] = str(mode_vals.iloc[0]) if not mode_vals.empty else 'None'
+    default_df = pd.DataFrame([default_row])
+    neighborhood_list = sorted(raw_train_reference['Neighborhood'].dropna().astype(str).unique().tolist())
+
     train['SalePrice'] = np.log1p(train['SalePrice'])
     
     y = train['SalePrice'].reset_index(drop=True).to_numpy(dtype=np.float64)
@@ -73,8 +85,8 @@ def run_pdf_pipeline():
     features = filling_null(features)
     features = new_features(features)
     
-    # Compute Box-Cox lambdas safely and prevent inf/NaN values
-    numerical_columns = features.select_dtypes(exclude='object').columns
+    # Compute Box-Cox lambdas safely on numeric columns
+    numerical_columns = features.select_dtypes(include=[np.number]).columns
     skewed = features[numerical_columns].apply(lambda x: x.skew()).sort_values(ascending=False)
     high_skew = skewed[abs(skewed) > 0.5].index
     
@@ -132,12 +144,12 @@ def run_pdf_pipeline():
     test_pred = np.expm1(ridge.predict(X_submission))
     submission = pd.DataFrame({'Id': test_id, 'SalePrice': test_pred})
     
-    return models, pd.DataFrame(metrics), submission, raw_train_reference, lambdas, encoded_cols
+    return models, pd.DataFrame(metrics), submission, default_df, neighborhood_list, lambdas, encoded_cols
 
 st.title("🏠 House Price EDA and Prediction (Ames Housing Dataset)")
 
 try:
-    models, metrics_df, submission_df, ref_df, lambdas, encoded_cols = run_pdf_pipeline()
+    models, metrics_df, submission_df, default_df, neighborhood_list, lambdas, encoded_cols = run_pdf_pipeline()
 except FileNotFoundError:
     st.error("Please make sure `train.csv` and `test.csv` from the `house-prices-advanced-regression-techniques` dataset are uploaded to the root of your GitHub repository.")
     st.stop()
@@ -163,15 +175,10 @@ with tab1:
         garage_cars = st.slider("Garage Cars (GarageCars)", 0, 4, 2)
         garage_area = st.number_input("Garage Area Sq Ft (GarageArea)", 0, 1500, 500)
         year_remod = st.number_input("Remodel Year (YearRemodAdd)", 1950, 2010, 2005)
-        neighborhood = st.selectbox("Neighborhood", sorted(ref_df['Neighborhood'].dropna().unique()))
+        neighborhood = st.selectbox("Neighborhood", neighborhood_list)
 
     if st.button("Predict SalePrice", type="primary"):
-        base_row = ref_df.iloc[[0]].copy()
-        for c in ref_df.columns:
-            if ref_df[c].dtype == 'object':
-                base_row[c] = ref_df[c].mode()[0]
-            else:
-                base_row[c] = ref_df[c].median()
+        base_row = default_df.copy()
                 
         base_row['OverallQual'] = overall_qual
         base_row['OverallCond'] = overall_cond
@@ -189,7 +196,7 @@ with tab1:
         base_row['MSSubClass'] = base_row['MSSubClass'].apply(str)
         base_row['MoSold'] = base_row['MoSold'].astype(str)
         base_row['YrSold'] = base_row['YrSold'].astype(str)
-        base_row = base_row.drop(['PoolQC', 'MiscFeature', 'Alley', 'Fence'], axis=1)
+        base_row = base_row.drop(['PoolQC', 'MiscFeature', 'Alley', 'Fence'], axis=1, errors='ignore')
         base_row = new_features(base_row)
         
         for col, lmbda in lambdas.items():
